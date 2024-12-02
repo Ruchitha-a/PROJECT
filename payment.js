@@ -1,148 +1,94 @@
-const frontendURL = "https://crowd-funding.vercel.app/";
-// const frontendURL = "http://localhost:3000/";
+const backendURL = "https://crowd-funding-backend.vercel.app/";
+// const backendURL = "http://localhost:4000/";
 
 const express = require("express");
 const checksum_lib = require("../paytm/checksum");
 const https = require("https");
 const qs = require("querystring");
-const db = require("../models");
+const parseUrl = express.urlencoded({ extended: false });
+const parseJson = express.json({ extended: false });
 const config = require("../config");
+require("dotenv").config();
 
 const app = express();
+const router = express.Router();
+const ctrl = require("../controllers");
+const { Donation } = require("../models");
 
-const success = async (req, res) => {
-  try {
-    var body = "";
+router.post("/:id/payment", [parseUrl, parseJson], (req, res) => {
+  var donation = new Donation({
+    amount: req.body.amount,
+    campaign: req.params.id,
+  });
 
-    req.on("data", function (data) {
-      body += data;
-    });
+  donation
+    .save()
+    .then(() => {
+      var paymentDetails = {
+        amount: req.body.amount,
+      };
 
-    req.on("end", async function () {
-      var html = "";
-      var post_data = qs.parse(body);
+      if (!paymentDetails.amount) {
+        res.status(400).send("Please enter the amount!");
+      } else {
+        var params = {};
+        params["MID"] = config.PaytmConfig.mid;
+        params["WEBSITE"] = config.PaytmConfig.website;
+        params["CHANNEL_ID"] = "WEB";
+        params["INDUSTRY_TYPE_ID"] = "Retail";
+        params["ORDER_ID"] = donation._id.toString();
+        params["CUST_ID"] = donation._id + new Date().getTime();
+        params["TXN_AMOUNT"] = paymentDetails.amount.toString();
+        params["CALLBACK_URL"] = backendURL + "api/donate/" + "success";
 
-      // received params in callback
-      //console.log("Callback Response: ", post_data, "\n");
-
-      const donation = await db.Donation.findOne({
-        _id: post_data.ORDERID,
-      });
-
-      if (!donation) {
-        return res.send("Transaction Failed, Please retry!!");
-      }
-
-      donation.transactionID = post_data.TXNID;
-
-      if (post_data.RESPCODE == "01") {
-        var params = post_data;
-        var checkSumHash = params.CHECKSUMHASH;
-        delete params.CHECKSUMHASH;
-        var result = checksum_lib.verifychecksum(
+        checksum_lib.genchecksum(
           params,
           config.PaytmConfig.key,
-          checkSumHash
-        );
+          function (err, checksum) {
+            // console.log("Error1: ", err);
+            var txn_url =
+              "https://securegw-stage.paytm.in/theia/processTransaction"; // for staging
+            // var txn_url = "https://securegw.paytm.in/theia/processTransaction"; // for production
 
-        //CheckSum has been Verified
-
-        if (result) {
-          //Final Step
-          //Let's do final re-verification
-
-          checksum_lib.genchecksum(
-            params,
-            config.PaytmConfig.key,
-            function (err, checksum) {
-              params.CHECKSUMHASH = checksum;
-              post_data = "JsonData=" + JSON.stringify(params);
-
-              var options = {
-                hostname: "securegw-stage.paytm.in", // for staging
-                // hostname: 'securegw.paytm.in', // for production
-                port: 443,
-                path: "/merchant-status/getTxnStatus",
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/x-www-form-urlencoded",
-                  "Content-Length": post_data.length,
-                },
-              };
-
-              // Set up the request
-              var response = "";
-              var post_req = https.request(options, async function (post_res) {
-                post_res.on("data", function (chunk) {
-                  response += chunk;
-                });
-
-                post_res.on("end", async function () {
-                  //console.log("S2S Response: ", response, "\n");
-
-                  var _result = JSON.parse(response);
-                  //We need to match donationID and amount
-                  if (
-                    _result.STATUS == "TXN_SUCCESS" &&
-                    _result.TXNAMOUNT == params.TXNAMOUNT &&
-                    _result.ORDERID == params.ORDERID
-                  ) {
-                    donation.transactionComplete = true;
-
-                    const campaign = await db.Campaign.findById(
-                      donation.campaign
-                    );
-
-                    const donationId = donation._id;
-                    const campaignId = campaign._id;
-
-                    var details = {
-                      transactionID: donation.transactionID,
-                      donationAmount: donation.amount,
-                    };
-
-                    campaign.donors.push(details);
-                    campaign.donorsNum = campaign.donorsNum + 1;
-                    campaign.raised = campaign.raised + donation.amount;
-                    await campaign.save();
-                    await donation.save();
-
-                    //console.log("Payment Successful");
-                    res
-                      .status(200)
-                      .redirect(frontendURL + "donation/success/" + donationId);
-                  } else {
-                    await donation.save();
-                    console.log("Payment Failed");
-                    res.status(400).redirect(frontendURL + "donation/failure");
-                  }
-                });
-              });
-
-              // post the data
-              post_req.write(post_data);
-              post_req.end();
+            // console.log("Error2: ", err);
+            var form_fields = "";
+            for (var x in params) {
+              form_fields +=
+                "<input type='hidden' name='" +
+                x +
+                "' value='" +
+                params[x] +
+                "' >";
             }
-          );
-        } else {
-          await donation.save();
-          console.log("Payment Failed");
-          res.status(400).redirect(frontendURL + "donation/failure");
-        }
-      } else {
-        await donation.save();
-        console.log("Payment Failed");
-        res.status(400).redirect(frontendURL + "donation/failure");
-      }
-    });
-  } catch (err) {
-    console.log("Server error.");
-    res.status(500).json({
-      message: "Server error. Sorry from our end.",
-    });
-  }
-};
+            form_fields +=
+              "<input type='hidden' name='CHECKSUMHASH' value='" +
+              checksum +
+              "' >";
 
-module.exports = {
-  success,
-};
+            // console.log(res);
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.write(
+              '<html><head><title>Merchant Checkout Page</title></head><body><center><h1>Please do not refresh this page...</h1></center><form method="post" action="' +
+                txn_url +
+                '" name="f1">' +
+                form_fields +
+                '</form><script type="text/javascript">document.f1.submit();</script></body></html>'
+            );
+            // console.log("All ok");
+            res.end();
+          }
+        );
+      }
+    })
+    .catch((err) => {
+      console.log("Error3:", err);
+      return res.status(500).json({
+        message: "Something went wrong while making payment. Please try again.",
+        err: err,
+      });
+    });
+});
+
+router.post("/success", ctrl.payment.success);
+
+module.exports = router;
