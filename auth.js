@@ -1,33 +1,50 @@
-const jwt = require("jsonwebtoken");
-require("dotenv").config();
+import axios from "axios";
+import jwtDecode from "jwt-decode";
+import config from "../config.js";
+import { toast } from "react-toastify";
 
-const verify = (req, res, next) => {
+axios.defaults.headers.common["authorization"] =
+  "Bearer " + localStorage.getItem("token");
+
+export const register = async (email, password) => {
   try {
-    // console.log("req.headers", req.headers);
-    const header = req.headers.authorization;
-    // console.log("header in auth verify", req.headers.authorization);
-    if (typeof header !== "undefined") {
-      const bearer = header.split(" ");
-      const token = bearer[1];
-      jwt.verify(token, `${process.env.JWT_SECRET}`, function (err, decoded) {
-        if (err)
-          return res.status(401).json({ message: "You are not authorized" });
-        req.curUserId = decoded.foo;
-        next();
-      });
-    } else {
-      res.status(403).json({
-        message: "You are not authorized",
-      });
-    }
-  } catch (err) {
-    console.log("Server error.");
-    return res.status(500).json({
-      message: "Something went wrong. Please try again.",
+    await axios.post(config.registerAdminUrl(), {
+      email: email,
+      password: password,
     });
+    toast.success("Registered");
+  } catch (e) {
+    if (e.response && e.response.data) toast.error(e.response.data.message);
+    else toast.error("Something went wrong.");
   }
 };
 
-module.exports = {
-  verify,
+export const login = async (email, password) => {
+  let err = undefined;
+  try {
+    const x = await axios.post(config.loginAdminUrl(), {
+      email: email,
+      password: password,
+    });
+
+    localStorage.setItem("token", x.data.jwt);
+    console.log("LoggedIn");
+  } catch (e) {
+    err = e;
+  }
+  return err;
+};
+
+export const logout = async () => {
+  localStorage.removeItem("token");
+};
+
+export const isAuthorised = () => {
+  if (!localStorage.getItem("token")) return false;
+  let exp = jwtDecode(localStorage.getItem("token")).exp;
+  if (!exp || exp * 1000 < Date.now()) {
+    localStorage.removeItem("token");
+    return false;
+  }
+  return true;
 };
